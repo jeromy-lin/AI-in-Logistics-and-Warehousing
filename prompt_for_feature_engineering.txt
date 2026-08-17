@@ -1,0 +1,252 @@
+我已經上傳一份「宅配物流 WMS 企業客戶原始資料」Excel。
+
+請先實際讀取並理解我上傳的 Excel，包括工作表名稱、欄位名稱、資料型態與內容，不要自行假設不存在的欄位。
+
+我的目標是將目前「一筆包裹一筆紀錄」的 WMS 原始配送資料，轉換成後續可以進行企業客戶 K-Means 分群的 Customer-Month 特徵資料。
+
+請根據我上傳的 Excel，產生一份可以「直接完整複製到 Google Colab 執行」的 Python 程式碼。
+
+### 一、Excel 輸入方式
+
+請使用：
+
+`from google.colab import files`
+
+以及：
+
+`files.upload()`
+
+讓使用者在 Colab 中重新上傳 Excel。
+
+請注意：
+
+* 不要設定固定 Excel 檔名。
+* 自動取得使用者上傳的檔案名稱。
+* 自動辨識或正確讀取包含 WMS 原始配送資料的工作表。
+* 如果找不到正確工作表，請清楚顯示可用的 Sheet Names，不要直接讓程式停止而沒有說明。
+
+### 二、原始 WMS 資料檢查
+
+讀取 Excel 後，請先顯示：
+
+* Excel 檔案名稱
+* 使用的工作表名稱
+* 原始資料筆數
+* 欄位數量
+* 所有欄位名稱
+* 前 5 筆資料
+* 各欄位缺失值數量
+
+請根據 Excel 實際存在的欄位進行分析，不要自行產生不存在的原始資料。
+
+### 三、資料轉換邏輯
+
+目前原始 WMS 是：
+
+「一筆包裹 = 一筆配送紀錄」
+
+我要將它轉換成：
+
+「一個企業客戶 + 一個月份 = 一筆 Customer-Month 資料」
+
+請依「客戶 + 月份」進行彙整。
+
+例如：
+
+全聯 + 2026-01 → 1 筆
+全聯 + 2026-02 → 1 筆
+momo + 2026-01 → 1 筆
+
+### 四、建立 Customer-Month Features
+
+請根據 Excel 實際存在的欄位，盡可能建立以下企業物流特徵：
+
+* Monthly Shipment Volume
+* Average Package Weight
+* Average Package Size
+* S60 Ratio
+* S90 Ratio
+* S120 Ratio
+* S150 Ratio
+* Delivery City Count
+* Remote Delivery Ratio
+* Cold Delivery Ratio
+* COD Ratio
+* Time Slot Ratio
+* Redelivery Ratio
+* Delivery Failure Ratio
+
+其中：
+
+* 月出貨件數 = 每位客戶每月的包裹筆數
+* 平均重量 = 每位客戶每月的平均重量
+* 平均尺寸 = 每位客戶每月的平均「長 + 寬 + 高」
+* 各尺寸級距比例 = s60、s90、s120、s150 各自占當月出貨件數的比例
+* 偏遠配送比例 = 偏遠配送件數 / 月出貨件數
+* 低溫配送比例 = 低溫件數 / 月出貨件數
+* COD 比例 = COD 件數 / 月出貨件數
+* 指定時段比例 = 有指定配送時段件數 / 月出貨件數
+* 二次配送比例 = 配送次數 >= 2 的件數 / 月出貨件數
+* 配送失敗比例 = 配送失敗件數 / 月出貨件數
+
+如果某一個特徵無法由目前 Excel 的實際欄位建立：
+
+「不要自行捏造資料」
+
+而是在程式輸出中清楚說明該特徵無法建立。
+
+### 五、資料整理
+
+請完成必要的資料前處理，包括：
+
+* 日期格式轉換
+* 建立 YYYY-MM 月份
+* 數值欄位轉換
+* 缺失值基本處理
+* 重複資料檢查
+* 比例特徵計算
+* 平均值適度四捨五入
+
+比例可以在分析結果中以百分比表示。
+
+完成後請顯示：
+
+`Original WMS Records → Customer-Month Records`
+
+讓使用者可以清楚看到資料從大量配送明細轉換為企業客戶特徵資料的過程。
+
+### 六、Google Colab 圖表規定【非常重要】
+
+程式必須在免費 Google Colab CPU 環境執行。
+
+所有 Python 程式中的「操作說明、print 訊息、註解」可以使用中文。
+
+但是：
+
+「所有輸出的圖片與圖表中，禁止出現中文字。」
+
+所有圖表中的以下內容全部使用英文：
+
+* Chart Title
+* X-axis Label
+* Y-axis Label
+* Legend
+* Feature Name
+* Customer Name
+* Annotation
+* Data Label
+
+例如企業名稱請在繪圖時轉換：
+
+* 全聯福利中心 → PX Mart
+* momo購物網 → momo
+* PChome → PChome
+* 食品企業A → Food Company A
+* 製造企業B → Manufacturing Company B
+
+如果 Excel 中出現其他中文企業名稱，請建立適合繪圖使用的英文顯示名稱，或使用 Customer ID，避免圖片出現中文字型錯誤。
+
+### 七、請產生以下英文圖表
+
+至少產生：
+
+1. `Monthly Shipment Volume by Customer`
+
+用途：比較不同企業客戶每月出貨量。
+
+2. `Customer Logistics Characteristics`
+
+用途：比較 Remote Ratio、Cold Ratio、COD Ratio、Time Slot Ratio、Redelivery Ratio 等物流特徵。
+
+3. `Average Package Weight by Customer`
+
+用途：比較不同企業平均包裹重量。
+
+4. `Average Package Size by Customer`
+
+用途：比較不同企業平均包裹尺寸。
+
+所有圖表請使用 matplotlib。
+
+圖表設計請：
+
+* 清楚
+* 簡潔
+* 適合課堂展示
+* 不使用 seaborn
+* 每一張圖獨立顯示，不要使用 subplot
+* 不要設定過度花俏的顏色
+* `plt.tight_layout()` 避免文字被裁切
+
+### 八、建立下一階段 K-Means 使用資料
+
+請另外建立一份：
+
+`KMeans_Features`
+
+此工作表將作為下一個課程 STEP 的輸入資料。
+
+欄位名稱請全部改成英文，例如：
+
+* Customer_ID
+* Customer
+* Month
+* Monthly_Volume
+* Avg_Weight
+* Avg_Size
+* S60_Ratio
+* S90_Ratio
+* S120_Ratio
+* S150_Ratio
+* Delivery_City_Count
+* Remote_Ratio
+* Cold_Ratio
+* COD_Ratio
+* TimeSlot_Ratio
+* Redelivery_Ratio
+* Failure_Ratio
+
+本階段「不要執行 K-Means」。
+
+只要把 K-Means 所需要的資料準備好。
+
+### 九、輸出新的 Excel
+
+最後請建立：
+
+`customer_monthly_features.xlsx`
+
+Excel 至少包含以下工作表：
+
+1. `Customer-Month`
+2. `KMeans_Features`
+3. `Customer_Profile`
+4. `Monthly_Volume`
+
+並使用：
+
+`files.download()`
+
+讓使用者自動下載結果。
+
+### 十、程式要求
+
+請確保產生的程式：
+
+* 可以整段直接複製到 Google Colab
+* 從第一行執行到最後一行
+* 不需要人工修改檔名
+* 不需要 API Key
+* 適合免費 Colab CPU
+* 優先使用 pandas、numpy、matplotlib、openpyxl
+* 不要加入目前任務不需要的複雜套件
+* 不要進行 K-Means
+* 不要進行 Regression
+* 不要進行 Random Forest
+* 不要進行 XGBoost
+
+本 STEP 的唯一目的為：
+
+「WMS 原始配送資料 → Customer-Month Feature Engineering → 產生下一階段 K-Means 所需 Excel」
+
+最後請直接提供完整 Python Code，並確認所有圖表顯示文字皆為英文。
