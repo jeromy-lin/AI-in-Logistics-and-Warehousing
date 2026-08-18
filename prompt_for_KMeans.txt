@@ -1,0 +1,204 @@
+我上傳了一份由企業 WMS 原始配送資料經過特徵工程後產生的 Excel 檔案。
+
+請先實際讀取並理解我上傳的 Excel，不要自行假設不存在的欄位。
+
+Excel 中包含工作表：
+
+KMeans_Features
+
+每一筆資料代表一個 Customer-Month，也就是某一家企業客戶在某一個月份的物流特徵。
+
+我要進行第二階段的「企業物流客戶 K-Means 分群分析」。
+
+請幫我產生一份可以直接複製到免費 Google Colab 執行的完整 Python Code。
+
+分析流程如下：
+
+1. 使用 Google Colab 的 files.upload() 讓使用者重新上傳 Excel。
+
+2. 不要使用固定檔名，請自動取得上傳的 Excel 檔名。
+
+3. 讀取工作表：
+
+KMeans_Features
+
+4. 顯示：
+- 資料筆數
+- 欄位名稱
+- 前 5 筆資料
+
+5. Customer_ID、Customer、Month 只能作為識別欄位，不可以直接拿來做 K-Means。
+
+6. 使用 Excel 中實際存在的數值物流特徵進行分群。
+
+主要特徵包含：
+
+Monthly_Volume
+Avg_Weight
+Avg_Size
+S60_Ratio
+S90_Ratio
+S120_Ratio
+S150_Ratio
+Delivery_City_Count
+Remote_Ratio
+Cold_Ratio
+COD_Ratio
+TimeSlot_Ratio
+Redelivery_Ratio
+Failure_Ratio
+
+7. 在執行 K-Means 之前，必須使用 StandardScaler 對所有數值特徵進行標準化。
+
+8. 不要一開始直接固定群數。
+
+請測試：
+
+K = 2
+K = 3
+K = 4
+K = 5
+
+9. 使用 Elbow Method 計算不同 K 的 Inertia，並產生：
+
+Elbow Method for K-Means
+
+圖表。
+
+10. 計算每一個 K 的 Silhouette Score，並產生：
+
+Silhouette Score by Number of Clusters
+
+圖表。
+
+11. 自動選擇 Silhouette Score 最高的 K 作為最佳群數。
+
+12. 使用最佳 K 重新執行 K-Means，並把 Cluster 編號加入原始資料。
+
+13. 使用 PCA 將標準化後的多維特徵降成 2 維：
+
+PC1
+PC2
+
+14. 產生 PCA 分群圖：
+
+K-Means Customer Segmentation with PCA
+
+要求：
+
+- 每個點代表一筆 Customer-Month
+- 不同 Cluster 使用不同顏色
+- 顯示 Customer 名稱
+- X 軸為 Principal Component 1
+- Y 軸為 Principal Component 2
+- 顯示 Cluster Legend
+
+15. 建立 Cluster Profile。
+
+請計算每一個 Cluster 在所有物流特徵上的平均值。
+
+16. Cluster Characteristics Comparison 圖請特別注意：
+
+不要直接把不同量綱的原始特徵放在同一個 Y 軸上比較。
+
+例如：
+
+Monthly_Volume 可能是 600～2200
+Avg_Size 可能是 50～100
+Avg_Weight 可能是 3～10
+Remote_Ratio、Cold_Ratio、COD_Ratio 等比例值可能只有 0～1
+
+如果直接使用原始值畫在同一張圖，Monthly_Volume 會把其他比例型特徵全部壓縮在接近 0 的位置，造成圖表無法判讀。
+
+因此請先將 Cluster Profile 的特徵做 StandardScaler 或 Z-score 標準化，再繪製 Cluster Characteristics Comparison。
+
+圖表名稱請使用：
+
+Standardized Cluster Characteristics Comparison
+
+Y 軸請使用：
+
+Standardized Value (Z-score)
+
+並加入：
+
+y = 0
+
+的水平基準線。
+
+這張圖的目的，是讓使用者可以清楚看出每一個 Cluster 在不同物流特徵上，相對於整體平均是：
+
+High
+Average
+Low
+
+而不是比較原始單位大小。
+
+17. Standardized Cluster Characteristics Comparison 至少比較以下特徵：
+
+Monthly_Volume
+Avg_Weight
+Avg_Size
+Remote_Ratio
+Cold_Ratio
+COD_Ratio
+TimeSlot_Ratio
+Redelivery_Ratio
+
+18. 除了標準化比較圖，也請保留原始 Cluster Profile 表，讓使用者可以看到每一群的實際平均值。
+
+19. 顯示每一家 Customer 每一個月份所屬的 Cluster。
+
+20. 再計算每一家企業在所有月份中最常出現的 Cluster，建立：
+
+Customer Main Cluster
+
+結果。
+
+21. 產生一張 Customer Main Cluster Summary 表，至少包含：
+
+Customer_ID
+Customer
+Main_Cluster
+
+22. 最後輸出 Excel：
+
+kmeans_customer_segmentation.xlsx
+
+至少包含以下工作表：
+
+Segmentation_Result
+Customer_Main_Cluster
+Cluster_Profile
+Standardized_Cluster_Profile
+Model_Selection
+
+23. 使用 files.download() 下載結果 Excel。
+
+重要要求：
+
+- 所有圖表文字都必須使用英文。
+- 包含 Title、X-axis、Y-axis、Legend、Feature Name、Customer Name、Annotation。
+- Python 程式註解與 print 說明可以使用中文。
+- 使用 matplotlib，不要使用 seaborn。
+- 每一張圖分開顯示，不要使用 subplot。
+- 每張圖都要使用 plt.tight_layout()。
+- 圖表文字不要重疊。
+- 圖例不要遮住主要資料。
+- PCA 圖中的 Customer 名稱若太密集，請調整字體大小與位置，避免嚴重重疊。
+- 程式必須可以在免費 Google Colab CPU 執行。
+- 不需要 API Key。
+- 不使用付費服務。
+- 如果 Excel 中實際不存在某個欄位，請明確指出，不要自行創造資料。
+- 此階段只進行 K-Means、PCA 與 Cluster Profile。
+- 不要進行 Regression。
+- 不要進行 Random Forest。
+- 不要進行 XGBoost。
+
+最重要的是：
+
+請特別重視分群結果的視覺化品質。
+
+Standardized Cluster Characteristics Comparison 必須能清楚呈現不同 Cluster 在各項物流特徵上的相對高低，不可以再出現 Monthly_Volume 因數值太大而把 Remote_Ratio、Cold_Ratio、COD_Ratio、TimeSlot_Ratio、Redelivery_Ratio 等特徵全部壓縮在接近 0 的情況。
+
+最後請直接提供一份完整、可以從第一行執行到最後一行的 Google Colab Python Code，不要只提供片段程式。
