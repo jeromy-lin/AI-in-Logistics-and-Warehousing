@@ -1,737 +1,295 @@
 # ==============================================================================
-# SKU K-Means 分群與倉儲效益分析自動化工具 (Colab 專用完整程式碼)
-# 作者：國立雲林科技大學電機系 林家仁
-# 成本- 報價分析分群演算設計
+# 宅配物流 WMS 企業客戶特徵工程 (Customer-Month Feature Engineering)
+# 目標：將「一筆包裹一筆紀錄」轉換為「Customer-Month 特徵」並產生下一階段 K-Means Excel
 # ==============================================================================
 
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
-warnings.filterwarnings("ignore", category=FutureWarning)
-
+import os
 import io
-import sys
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-
 from google.colab import files
-from IPython.display import display, HTML
-
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
-
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-from openpyxl.formatting.rule import ColorScaleRule, CellIsRule
 
 # ------------------------------------------------------------------------------
-# 1. 檔案上傳與初步檢查
+# 第一區：Excel 檔案上傳與自動辨識
 # ------------------------------------------------------------------------------
-print("【步驟 1/12】請上傳包含 SKU 資料的 Excel 檔案...")
+print("=== STEP 1: 請選擇上傳 WMS 原始資料 Excel 檔案 ===")
 uploaded = files.upload()
 
 if not uploaded:
-    print("❌ 錯誤：未上傳任何檔案，程式已終止。")
-    sys.exit()
+    raise ValueError("未上傳任何檔案，請重新執行並選擇檔案！")
 
+# 自動取得上傳的檔案名稱
 file_name = list(uploaded.keys())[0]
-sheet_target = "SKU資料輸入"
+print(f"\n成功讀取上傳檔案：{file_name}")
 
-try:
-    # 讀取 Excel，第 4 列為表頭 (header=3)
-    df_raw = pd.read_excel(file_name, sheet_name=sheet_target, header=3)
-except Exception as e:
-    print(f"❌ 讀取 Excel 失敗：工作表 '{sheet_target}' 可能不存在，或檔案格式不正確。詳細錯誤: {e}")
-    sys.exit()
+# 自動讀取 Excel Sheet Names
+excel_file = pd.ExcelFile(io.BytesIO(uploaded[file_name]))
+available_sheets = excel_file.sheet_names
+print(f"可用的工作表 (Sheet Names)：{available_sheets}")
 
-# 自動移除完全空白的資料列
-df_raw = df_raw.dropna(how="all").reset_index(drop=True)
+# 自動尋找包含 WMS 原始配送資料的工作表
+target_sheet = None
+for sheet in available_sheets:
+    if 'WMS' in sheet or '原始' in sheet or 'Data' in sheet.upper():
+        target_sheet = sheet
+        break
 
-# 檢查必要欄位是否存在
-required_cols = [
-    "SKU編號", "商品名稱", "商品類別",
-    "每日出貨箱數", "每日揀貨次數", "體積等級", "重量等級",
-    "是否液體", "是否易碎", "是否季節性",
-    "目前儲位區", "目前距離主要作業區m"
-]
+if target_sheet is None:
+    print("\n[錯誤] 找不到名稱包含 WMS 或原始資料的工作表！")
+    print(f"目前檔案內所有可用的 Sheet Names 為：{available_sheets}")
+    raise KeyError("請確認工作表名稱後重新執行。")
 
-missing_cols = [col for col in required_cols if col not in df_raw.columns]
-if missing_cols:
-    print(f"❌ 錯誤：Excel 檔案中缺少以下必要欄位：{', '.join(missing_cols)}")
-    sys.exit()
-
-df = df_raw.copy()
+print(f"已鎖定目標工作表：[{target_sheet}]")
+df_raw = pd.read_excel(io.BytesIO(uploaded[file_name]), sheet_name=target_sheet)
 
 # ------------------------------------------------------------------------------
-# 2. 資料前處理與特徵轉換
+# 第二區：原始 WMS 資料檢查
 # ------------------------------------------------------------------------------
-print("【步驟 2/12】進行資料前處理與特徵轉換...")
+print("\n" + "="*50)
+print("=== STEP 2: 原始 WMS 資料檢查結果 ===")
+print("="*50)
+print(f"1. Excel 檔案名稱：{file_name}")
+print(f"2. 使用的工作表名稱：{target_sheet}")
+print(f"3. 原始資料筆數：{len(df_raw):,} 筆")
+print(f"4. 欄位數量：{df_raw.shape[1]} 個")
+print(f"5. 所有欄位名稱：\n   {df_raw.columns.tolist()}")
+print("\n6. 前 5 筆資料預覽：")
+display(df_raw.head())
 
-volume_map = {"小": 1, "中": 2, "大": 3}
-weight_map = {"輕": 1, "中": 2, "重": 3}
-binary_map = {
-    "否": 0, "是": 1, "N": 0, "Y": 1, "No": 0, "Yes": 1,
-    "False": 0, "True": 1, "0": 0, "1": 1
+print("\n7. 各欄位缺失值數量：")
+print(df_raw.isnull().sum())
+
+# ------------------------------------------------------------------------------
+# 第三區：資料前處理與 Customer-Month 特徵建立
+# ------------------------------------------------------------------------------
+print("\n" + "="*50)
+print("=== STEP 3: 資料轉換與 Customer-Month 特徵建立 ===")
+print("="*50)
+
+# 日期格式轉換與建立 YYYY-MM 月份
+df_raw['出貨日期'] = pd.to_datetime(df_raw['出貨日期'])
+df_raw['Month'] = df_raw['出貨日期'].dt.strftime('%Y-%m')
+
+# 重複資料檢查
+duplicate_count = df_raw.duplicated().sum()
+print(f"重複資料筆數：{duplicate_count} 筆")
+if duplicate_count > 0:
+    df_raw = df_raw.drop_duplicates()
+
+# 依 [客戶代碼, 客戶名稱, Month] 進行 Customer-Month 群組彙整
+grouped = df_raw.groupby(['客戶代碼', '客戶名稱', 'Month'])
+
+df_cm = grouped.agg(
+    Monthly_Volume=('包裹編號', 'count'),
+    Avg_Weight=('重量kg', 'mean'),
+    Avg_Size=('尺寸總和cm', 'mean'),
+    S60_Count=('尺寸級距', lambda x: (x == 's60').sum()),
+    S90_Count=('尺寸級距', lambda x: (x == 's90').sum()),
+    S120_Count=('尺寸級距', lambda x: (x == 's120').sum()),
+    S150_Count=('尺寸級距', lambda x: (x == 's150').sum()),
+    Delivery_City_Count=('收件縣市', 'nunique'),
+    Remote_Count=('配送區域類型', lambda x: (x == '偏遠').sum()),
+    Cold_Count=('溫層', lambda x: (x == '低溫').sum()),
+    COD_Count=('COD', lambda x: (x == 'Y').sum()),
+    TimeSlot_Count=('指定時段', lambda x: (x != '無').sum()),
+    Redelivery_Count=('配送次數', lambda x: (x >= 2).sum()),
+    Failure_Count=('配送結果', lambda x: (x == '配送失敗').sum())
+).reset_index()
+
+# 計算特徵比例
+df_cm['S60_Ratio'] = df_cm['S60_Count'] / df_cm['Monthly_Volume']
+df_cm['S90_Ratio'] = df_cm['S90_Count'] / df_cm['Monthly_Volume']
+df_cm['S120_Ratio'] = df_cm['S120_Count'] / df_cm['Monthly_Volume']
+df_cm['S150_Ratio'] = df_cm['S150_Count'] / df_cm['Monthly_Volume']
+df_cm['Remote_Ratio'] = df_cm['Remote_Count'] / df_cm['Monthly_Volume']
+df_cm['Cold_Ratio'] = df_cm['Cold_Count'] / df_cm['Monthly_Volume']
+df_cm['COD_Ratio'] = df_cm['COD_Count'] / df_cm['Monthly_Volume']
+df_cm['TimeSlot_Ratio'] = df_cm['TimeSlot_Count'] / df_cm['Monthly_Volume']
+df_cm['Redelivery_Ratio'] = df_cm['Redelivery_Count'] / df_cm['Monthly_Volume']
+df_cm['Failure_Ratio'] = df_cm['Failure_Count'] / df_cm['Monthly_Volume']
+
+# 數值適度四捨五入 (平均值與比例)
+round_cols = ['Avg_Weight', 'Avg_Size', 'S60_Ratio', 'S90_Ratio', 'S120_Ratio', 'S150_Ratio', 
+              'Remote_Ratio', 'Cold_Ratio', 'COD_Ratio', 'TimeSlot_Ratio', 'Redelivery_Ratio', 'Failure_Ratio']
+df_cm[round_cols] = df_cm[round_cols].round(4)
+
+print(f"\n轉換完成：Original WMS Records ({len(df_raw):,} 筆) → Customer-Month Records ({len(df_cm)} 筆)")
+print("\nCustomer-Month 資料預覽（前 5 筆）：")
+display(df_cm.head())
+
+# ------------------------------------------------------------------------------
+# 第四區：建立 KMeans_Features 與英文客戶對照
+# ------------------------------------------------------------------------------
+
+# 中英文客戶名稱映射表 (供繪圖與英文工作表使用，避免中文字型顯示問題)
+customer_en_map = {
+    '全聯福利中心': 'PX Mart',
+    'momo購物網': 'momo',
+    'PChome': 'PChome',
+    '食品企業A': 'Food Company A',
+    '製造企業B': 'Manufacturing Company B'
 }
 
-# 清除文字前後空白並建立數值分析欄位
-df["體積等級數值"] = df["體積等級"].astype(str).str.strip().map(volume_map)
-df["重量等級數值"] = df["重量等級"].astype(str).str.strip().map(weight_map)
-df["是否液體數值"] = df["是否液體"].astype(str).str.strip().map(binary_map)
-df["是否易碎數值"] = df["是否易碎"].astype(str).str.strip().map(binary_map)
-df["是否季節性數值"] = df["是否季節性"].astype(str).str.strip().map(binary_map)
-
-# 數值欄位轉 numeric 並進行中位數補值
-feature_cols_raw = [
-    "每日出貨箱數", "每日揀貨次數",
-    "體積等級數值", "重量等級數值",
-    "是否液體數值", "是否易碎數值", "是否季節性數值",
-    "目前距離主要作業區m"
-]
-
-for col in feature_cols_raw:
-    df[col] = pd.to_numeric(df[col], errors="coerce")
-    median_val = df[col].median()
-    df[col] = df[col].fillna(median_val if pd.notnull(median_val) else 0)
-
-# ------------------------------------------------------------------------------
-# 3. K-Means 分群與 PCA 降維
-# ------------------------------------------------------------------------------
-print("【步驟 3/12】執行 K-Means 5群分析與 PCA 降維...")
-
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(df[feature_cols_raw])
-
-kmeans = KMeans(n_clusters=5, random_state=42, n_init=20)
-cluster_labels = kmeans.fit_predict(X_scaled)
-
-# 群組編號改為 1 至 5
-df["群組編號"] = cluster_labels + 1
-
-pca = PCA(n_components=2, random_state=42)
-pca_transformed = pca.fit_transform(X_scaled)
-df["PCA_X"] = pca_transformed[:, 0]
-df["PCA_Y"] = pca_transformed[:, 1]
+df_kmeans = pd.DataFrame({
+    'Customer_ID': df_cm['客戶代碼'],
+    'Customer': df_cm['客戶名稱'].map(customer_en_map).fillna(df_cm['客戶名稱']),
+    'Month': df_cm['Month'],
+    'Monthly_Volume': df_cm['Monthly_Volume'],
+    'Avg_Weight': df_cm['Avg_Weight'],
+    'Avg_Size': df_cm['Avg_Size'],
+    'S60_Ratio': df_cm['S60_Ratio'],
+    'S90_Ratio': df_cm['S90_Ratio'],
+    'S120_Ratio': df_cm['S120_Ratio'],
+    'S150_Ratio': df_cm['S150_Ratio'],
+    'Delivery_City_Count': df_cm['Delivery_City_Count'],
+    'Remote_Ratio': df_cm['Remote_Ratio'],
+    'Cold_Ratio': df_cm['Cold_Ratio'],
+    'COD_Ratio': df_cm['COD_Ratio'],
+    'TimeSlot_Ratio': df_cm['TimeSlot_Ratio'],
+    'Redelivery_Ratio': df_cm['Redelivery_Ratio'],
+    'Failure_Ratio': df_cm['Failure_Ratio']
+})
 
 # ------------------------------------------------------------------------------
-# 4. PCA 二維視覺化 (Matplotlib)
+# 第五區：Matplotlib 全英文圖表繪製 (無中文字型，適合展示)
 # ------------------------------------------------------------------------------
-print("【步驟 4/12】繪製 PCA 散布圖...")
+print("\n" + "="*50)
+print("=== STEP 4: 產生全英文分析圖表 ===")
+print("="*50)
 
-plt.figure(figsize=(9, 7), facecolor='white', dpi=150)
-ax = plt.subplot(111)
-ax.set_facecolor('white')
+# 準備繪圖使用的 DataFrame (包含英文名稱)
+df_plot = df_cm.copy()
+df_plot['Customer_EN'] = df_plot['客戶名稱'].map(customer_en_map).fillna(df_plot['客戶名稱'])
+customers = df_plot['Customer_EN'].unique()
+months = sorted(df_plot['Month'].unique())
 
-# 柔和色彩組合 (Cluster 1 ~ 5)
-cluster_plot_colors = ['#5B9BD5', '#70AD47', '#ED7D31', '#7030A0', '#FFC000']
+# 色彩設定 (簡潔專業)
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
 
-centers_pca = pca.transform(kmeans.cluster_centers_)
+# Chart 1: Monthly Shipment Volume by Customer (Grouped Bar Chart)
+plt.figure(figsize=(10, 5))
+x = np.arange(len(months))
+width = 0.15
 
-for c in range(1, 6):
-    idx = df["群組編號"] == c
-    plt.scatter(
-        df.loc[idx, "PCA_X"], df.loc[idx, "PCA_Y"],
-        c=cluster_plot_colors[c-1],
-        label=f"Cluster {c}",
-        alpha=0.85,
-        s=60,
-        edgecolors='none'
-    )
-    # 標示群組中心
-    plt.scatter(
-        centers_pca[c-1, 0], centers_pca[c-1, 1],
-        c=cluster_plot_colors[c-1],
-        marker='*',
-        s=300,
-        edgecolors='#333333',
-        linewidths=1.2
-    )
+for i, cust in enumerate(customers):
+    cust_data = df_plot[df_plot['Customer_EN'] == cust]
+    volumes = [cust_data[cust_data['Month'] == m]['Monthly_Volume'].values[0] if len(cust_data[cust_data['Month'] == m]) > 0 else 0 for m in months]
+    plt.bar(x + i * width, volumes, width, label=cust, color=colors[i % len(colors)])
 
-plt.title("PCA Visualization of Five SKU Clusters", fontsize=14, fontweight='bold', pad=15, color='#262626')
-plt.xlabel("Principal Component 1", fontsize=11, color='#404040')
-plt.ylabel("Principal Component 2", fontsize=11, color='#404040')
-
-for spine in ax.spines.values():
-    spine.set_color('#D9D9D9')
-
-plt.grid(True, linestyle='--', alpha=0.3, color='#CCCCCC')
-plt.legend(frameon=True, facecolor='white', edgecolor='#E0E0E0', fontsize=10)
+plt.title('Monthly Shipment Volume by Customer', fontsize=14, fontweight='bold', pad=15)
+plt.xlabel('Month', fontsize=11)
+plt.ylabel('Shipment Volume (Packages)', fontsize=11)
+plt.xticks(x + width * (len(customers) - 1) / 2, months)
+plt.legend(title='Customer', loc='upper right')
+plt.grid(axis='y', linestyle='--', alpha=0.5)
 plt.tight_layout()
 plt.show()
 
-# ------------------------------------------------------------------------------
-# 5. 效益分析計算
-# ------------------------------------------------------------------------------
-print("【步驟 5/12】計算儲位優化效益...")
+# Chart 2: Customer Logistics Characteristics (Averaged Ratio Profiles)
+plt.figure(figsize=(11, 5.5))
+ratio_cols = ['Remote_Ratio', 'Cold_Ratio', 'COD_Ratio', 'TimeSlot_Ratio', 'Redelivery_Ratio']
+ratio_labels = ['Remote Ratio', 'Cold Ratio', 'COD Ratio', 'Time Slot Ratio', 'Redelivery Ratio']
 
-# 定義優先度分數以區分商品層級
-df["優先度分數"] = df["每日出貨箱數"] * 0.4 + df["每日揀貨次數"] * 0.6
+cust_ratio_avg = df_plot.groupby('Customer_EN')[ratio_cols].mean()
 
-p80 = df["目前距離主要作業區m"].quantile(0.20)
-p60 = df["目前距離主要作業區m"].quantile(0.40)
-p50 = df["目前距離主要作業區m"].median()
+x_ratio = np.arange(len(ratio_labels))
+width_ratio = 0.15
 
-q75_score = df["優先度分數"].quantile(0.75)
-q50_score = df["優先度分數"].quantile(0.50)
-q25_score = df["優先度分數"].quantile(0.25)
+for i, cust in enumerate(customers):
+    vals = cust_ratio_avg.loc[cust, ratio_cols].values
+    plt.bar(x_ratio + i * width_ratio, vals, width_ratio, label=cust, color=colors[i % len(colors)])
 
-def assign_suggested_dist(row):
-    score = row["優先度分數"]
-    curr = row["目前距離主要作業區m"]
-    if score >= q75_score:
-        target = p80
-    elif score >= q50_score:
-        target = p60
-    elif score >= q25_score:
-        target = p50
-    else:
-        target = curr
-    return min(curr, target)
+plt.title('Customer Logistics Characteristics (Average Ratio Profiles)', fontsize=14, fontweight='bold', pad=15)
+plt.xlabel('Logistics Feature', fontsize=11)
+plt.ylabel('Ratio', fontsize=11)
+plt.xticks(x_ratio + width_ratio * (len(customers) - 1) / 2, ratio_labels)
+plt.gca().yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: '{:.0%}'.format(y)))
+plt.legend(title='Customer', loc='upper right')
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+plt.tight_layout()
+plt.show()
 
-df["建議距離m"] = df.apply(assign_suggested_dist, axis=1)
-df["改善前距離成本"] = df["每日揀貨次數"] * df["目前距離主要作業區m"]
-df["改善後距離成本"] = df["每日揀貨次數"] * df["建議距離m"]
-df["節省距離成本"] = df["改善前距離成本"] - df["改善後距離成本"]
-df["節省距離成本"] = df["節省距離成本"].apply(lambda x: max(0.0, x))
+# Chart 3: Average Package Weight by Customer (Bar Chart)
+plt.figure(figsize=(9, 5))
+avg_weights = df_plot.groupby('Customer_EN')['Avg_Weight'].mean().reindex(customers)
 
-df["改善率%"] = np.where(
-    df["改善前距離成本"] > 0,
-    (df["節省距離成本"] / df["改善前距離成本"]) * 100,
-    0.0
-)
+bars3 = plt.bar(customers, avg_weights, color=colors, width=0.5)
+plt.title('Average Package Weight by Customer', fontsize=14, fontweight='bold', pad=15)
+plt.xlabel('Customer', fontsize=11)
+plt.ylabel('Average Weight (kg)', fontsize=11)
+plt.grid(axis='y', linestyle='--', alpha=0.5)
 
-# ------------------------------------------------------------------------------
-# 6. Colab 表格美化通用函數
-# ------------------------------------------------------------------------------
-cluster_colors = {
-    1: "#DCEAF7",
-    2: "#E2F0D9",
-    3: "#FCE4D6",
-    4: "#E4DFEC",
-    5: "#FFF2CC"
-}
-
-def 美化表格(df_input, 標題="", 百分比欄位=None, 小數欄位=None, 高亮前十=False, 綠色漸層欄=None):
-    display(HTML(f"<h3 style='color:#1F4E78; font-family:Microsoft JhengHei, sans-serif; margin-top:20px; margin-bottom:8px;'>{標題}</h3>"))
-    
-    styler = df_input.style
-    
-    format_dict = {}
-    if 小數欄位:
-        for col in 小數欄位:
-            if col in df_input.columns:
-                format_dict[col] = "{:.2f}"
-    if 百分比欄位:
-        for col in 百分比欄位:
-            if col in df_input.columns:
-                format_dict[col] = "{:.1f}%"
-    
-    styler = styler.format(format_dict, na_rep="-")
-    
-    # CSS 樣式設定
-    styles = [
-        {'selector': 'th', 'props': [
-            ('background-color', '#1F4E78'),
-            ('color', 'white'),
-            ('font-weight', 'bold'),
-            ('text-align', 'center'),
-            ('padding', '8px 12px'),
-            ('font-size', '13px'),
-            ('border', '1px solid #D9D9D9')
-        ]},
-        {'selector': 'td', 'props': [
-            ('padding', '6px 10px'),
-            ('vertical-align', 'middle'),
-            ('border', '1px solid #E0E0E0'),
-            ('font-size', '12px'),
-            ('white-space', 'normal'),
-            ('word-break', 'break-word')
-        ]},
-        {'selector': 'table', 'props': [
-            ('border-collapse', 'collapse'),
-            ('width', '100%'),
-            ('margin-bottom', '15px')
-        ]}
-    ]
-    styler = styler.set_table_styles(styles)
-    styler = styler.hide(axis='index')
-    
-    # 交錯底色
-    def zebra(row):
-        return ['background-color: #F9FAFB' if row.name % 2 == 1 else 'background-color: #FFFFFF' for _ in row]
-    styler = styler.apply(zebra, axis=1)
-    
-    # 群組編號底色
-    if "群組編號" in df_input.columns:
-        def color_cluster(val):
-            color = cluster_colors.get(val, "#FFFFFF")
-            return f'background-color: {color}; text-align: center; font-weight: bold;'
-        styler = styler.map(color_cluster, subset=["群組編號"])
-        
-    # 文字與對齊控制
-    text_left_cols = [c for c in ["SKU編號", "商品名稱", "商品類別", "目前儲位區", "群組特性", "管理建議"] if c in df_input.columns]
-    if text_left_cols:
-        styler = styler.map(lambda v: 'text-align: left;', subset=text_left_cols)
-        
-    num_center_cols = [c for c in ["群組編號", "SKU數量", "體積等級", "重量等級", "是否液體", "是否易碎", "是否季節性"] if c in df_input.columns]
-    if num_center_cols:
-        styler = styler.map(lambda v: 'text-align: center;', subset=num_center_cols)
-        
-    # 優先調整前 10 項黃色底色
-    if 高亮前十:
-        def highlight_top10(row):
-            if row.name < 10:
-                return ['background-color: #FFF2CC !important;' for _ in row]
-            return ['' for _ in row]
-        styler = styler.apply(highlight_top10, axis=1)
-        
-    # 改善率為 0 灰色字體
-    if "改善率%" in df_input.columns:
-        def gray_zero_rate(val):
-            try:
-                if float(val) == 0:
-                    return 'color: #A6A6A6;'
-            except:
-                pass
-            return ''
-        styler = styler.map(gray_zero_rate, subset=["改善率%"])
-
-    display(styler)
-
-# ------------------------------------------------------------------------------
-# 7. 顯示 SKU 分群結果表
-# ------------------------------------------------------------------------------
-print("【步驟 6/12】產生 SKU 分群結果表...")
-
-sku_result_cols = [
-    "SKU編號", "商品名稱", "商品類別", "每日出貨箱數", "每日揀貨次數",
-    "體積等級", "重量等級", "是否液體", "是否易碎", "是否季節性",
-    "目前儲位區", "目前距離主要作業區m", "群組編號", "PCA_X", "PCA_Y"
-]
-
-df_sku_result = df[sku_result_cols].sort_values(by=["群組編號", "每日揀貨次數"], ascending=[True, False]).reset_index(drop=True)
-
-美化表格(
-    df_sku_result,
-    標題="一、SKU 分群詳細結果表",
-    小數欄位=["PCA_X", "PCA_Y", "每日出貨箱數", "每日揀貨次數", "目前距離主要作業區m"]
-)
-
-# ------------------------------------------------------------------------------
-# 8. 產生並顯示五群統計摘要表
-# ------------------------------------------------------------------------------
-print("【步驟 7/12】計算並產生五群統計摘要表...")
-
-summary_rows = []
-total_skus = len(df)
-
-for c in range(1, 6):
-    c_df = df[df["群組編號"] == c]
-    cnt = len(c_df)
-    pct = (cnt / total_skus) * 100 if total_skus > 0 else 0
-    
-    avg_out = c_df["每日出貨箱數"].mean()
-    avg_pick = c_df["每日揀貨次數"].mean()
-    avg_vol = c_df["體積等級數值"].mean()
-    avg_wt = c_df["重量等級數值"].mean()
-    pct_liq = c_df["是否液體數值"].mean() * 100
-    pct_frag = c_df["是否易碎數值"].mean() * 100
-    pct_seas = c_df["是否季節性數值"].mean() * 100
-    avg_dist = c_df["目前距離主要作業區m"].mean()
-    
-    # 根據實際數據動態判斷群組特性與建議
-    traits = []
-    if avg_out > df["每日出貨箱數"].mean() and avg_pick > df["每日揀貨次數"].mean():
-        traits.append("高出貨高揀貨熱銷主力")
-    if avg_wt > 2.2 or avg_vol > 2.2:
-        traits.append("大型或重物商品")
-    if pct_liq > 40 or pct_frag > 40:
-        traits.append("高風險液體/易碎品")
-    if pct_seas > 40:
-        traits.append("季節性波動商品")
-    if not traits:
-        traits.append("低頻一般周轉商品")
-        
-    trait_str = " / ".join(traits)
-    
-    # 建議
-    if "高出貨高揀貨熱銷主力" in trait_str:
-        sug = "移至前排核心快速揀貨區，減少搬運距離"
-    elif "大型或重物商品" in trait_str:
-        sug = "配置於重物專區或棧板區，輔助機械設備作業"
-    elif "高風險液體/易碎品" in trait_str:
-        sug = "設置防摔防漏防護專區，固定專用防護儲位"
-    elif "季節性波動商品" in trait_str:
-        sug = "採用彈性調度儲位，旺季前移、淡季後移"
-    else:
-        sug = "維持中後排儲位，定期檢討周轉率"
-        
-    summary_rows.append({
-        "群組編號": c,
-        "SKU數量": cnt,
-        "SKU占比%": pct,
-        "平均每日出貨箱數": avg_out,
-        "平均每日揀貨次數": avg_pick,
-        "平均體積等級": avg_vol,
-        "平均重量等級": avg_wt,
-        "液體商品比例%": pct_liq,
-        "易碎商品比例%": pct_frag,
-        "季節性商品比例%": pct_seas,
-        "平均目前距離m": avg_dist,
-        "群組特性": trait_str,
-        "管理建議": sug
-    })
-
-df_summary = pd.DataFrame(summary_rows)
-
-美化表格(
-    df_summary,
-    標題="二、五群統計摘要與管理建議表",
-    百分比欄位=["SKU占比%", "液體商品比例%", "易碎商品比例%", "季節性商品比例%"],
-    小數欄位=["平均每日出貨箱數", "平均每日揀貨次數", "平均體積等級", "平均重量等級", "平均目前距離m"]
-)
-
-# ------------------------------------------------------------------------------
-# 9. 顯示 SKU 效益分析表
-# ------------------------------------------------------------------------------
-print("【步驟 8/12】產生 SKU 效益分析表...")
-
-sku_benefit_cols = [
-    "SKU編號", "商品名稱", "群組編號", "每日出貨箱數", "每日揀貨次數",
-    "目前距離主要作業區m", "建議距離m", "改善前距離成本", "改善後距離成本",
-    "節省距離成本", "改善率%"
-]
-
-df_benefit_sorted = df[sku_benefit_cols].sort_values(by="節省距離成本", ascending=False).reset_index(drop=True)
-
-美化表格(
-    df_benefit_sorted,
-    標題="三、優先改善 SKU 排名 (SKU 效益分析表)",
-    百分比欄位=["改善率%"],
-    小數欄位=["每日出貨箱數", "每日揀貨次數", "目前距離主要作業區m", "建議距離m", "改善前距離成本", "改善後距離成本", "節省距離成本"],
-    高亮前十=True
-)
-
-# ------------------------------------------------------------------------------
-# 10. Colab HTML 摘要數字卡片
-# ------------------------------------------------------------------------------
-print("【步驟 9/12】產生摘要數字卡片...")
-
-total_sku_cnt = len(df)
-adj_sku_cnt = len(df[df["節省距離成本"] > 0])
-before_cost = df["改善前距離成本"].sum()
-after_cost = df["改善後距離成本"].sum()
-saved_cost = df["節省距離成本"].sum()
-overall_imp_rate = (saved_cost / before_cost * 100) if before_cost > 0 else 0.0
-
-cards_html = f"""
-<div style="font-family: Microsoft JhengHei, sans-serif; margin: 20px 0;">
-    <h3 style="color: #1F4E78; margin-bottom: 12px;">四、整體優化效益摘要卡片</h3>
-    <div style="display: flex; flex-wrap: wrap; gap: 12px;">
-        <div style="flex: 1; min-width: 150px; background-color: #FFFFFF; border: 1px solid #E0E0E0; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center;">
-            <div style="color: #1F4E78; font-size: 13px; font-weight: bold;">SKU 總數</div>
-            <div style="color: #262626; font-size: 24px; font-weight: bold; margin-top: 6px;">{total_sku_cnt:,}</div>
-        </div>
-        <div style="flex: 1; min-width: 150px; background-color: #FFFFFF; border: 1px solid #E0E0E0; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center;">
-            <div style="color: #1F4E78; font-size: 13px; font-weight: bold;">建議調整 SKU 數</div>
-            <div style="color: #C65911; font-size: 24px; font-weight: bold; margin-top: 6px;">{adj_sku_cnt:,}</div>
-        </div>
-        <div style="flex: 1; min-width: 150px; background-color: #FFFFFF; border: 1px solid #E0E0E0; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center;">
-            <div style="color: #1F4E78; font-size: 13px; font-weight: bold;">改善前每日距離成本</div>
-            <div style="color: #262626; font-size: 22px; font-weight: bold; margin-top: 6px;">{before_cost:,.1f}</div>
-        </div>
-        <div style="flex: 1; min-width: 150px; background-color: #FFFFFF; border: 1px solid #E0E0E0; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center;">
-            <div style="color: #1F4E78; font-size: 13px; font-weight: bold;">改善後每日距離成本</div>
-            <div style="color: #2F5597; font-size: 22px; font-weight: bold; margin-top: 6px;">{after_cost:,.1f}</div>
-        </div>
-        <div style="flex: 1; min-width: 150px; background-color: #FFFFFF; border: 1px solid #E0E0E0; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center;">
-            <div style="color: #1F4E78; font-size: 13px; font-weight: bold;">每日節省距離成本</div>
-            <div style="color: #385723; font-size: 22px; font-weight: bold; margin-top: 6px;">{saved_cost:,.1f}</div>
-        </div>
-        <div style="flex: 1; min-width: 150px; background-color: #FFFFFF; border: 1px solid #E0E0E0; border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center;">
-            <div style="color: #1F4E78; font-size: 13px; font-weight: bold;">整體改善率</div>
-            <div style="color: #385723; font-size: 24px; font-weight: bold; margin-top: 6px;">{overall_imp_rate:.1f}%</div>
-        </div>
-    </div>
-</div>
-"""
-display(HTML(cards_html))
-
-# ------------------------------------------------------------------------------
-# 11. 效益比較圖表 (Matplotlib)
-# ------------------------------------------------------------------------------
-print("【步驟 10/12】繪製效益比較圖表...")
-
-# 圖 1：五群改善前後距離成本長條圖
-cluster_costs = df.groupby("群組編號")[["改善前距離成本", "改善後距離成本"]].sum().reindex(range(1, 6)).fillna(0)
-
-plt.figure(figsize=(9, 5.5), facecolor='white', dpi=150)
-ax1 = plt.subplot(111)
-ax1.set_facecolor('white')
-
-x_indices = np.arange(1, 6)
-bar_width = 0.35
-
-bars1 = plt.bar(x_indices - bar_width/2, cluster_costs["改善前距離成本"], width=bar_width, label='Before Improvement', color='#5B9BD5', alpha=0.9)
-bars2 = plt.bar(x_indices + bar_width/2, cluster_costs["改善後距離成本"], width=bar_width, label='After Improvement', color='#ED7D31', alpha=0.9)
-
-plt.title("Before and After Distance Cost by Cluster", fontsize=13, fontweight='bold', pad=15, color='#262626')
-plt.xlabel("Cluster 1 to Cluster 5", fontsize=11, color='#404040')
-plt.ylabel("Daily Distance Cost", fontsize=11, color='#404040')
-plt.xticks(x_indices, [f"Cluster {i}" for i in range(1, 6)])
-
-for bar in bars1:
+for bar in bars3:
     yval = bar.get_height()
-    plt.text(bar.get_x() + bar.get_width()/2.0, yval + (yval*0.01 + 0.5), f"{yval:,.0f}", ha='center', va='bottom', fontsize=9, color='#404040')
+    plt.text(bar.get_x() + bar.get_width()/2, yval + 0.1, f'{yval:.2f} kg', ha='center', va='bottom', fontsize=10)
 
-for bar in bars2:
+plt.tight_layout()
+plt.show()
+
+# Chart 4: Average Package Size by Customer (Bar Chart)
+plt.figure(figsize=(9, 5))
+avg_sizes = df_plot.groupby('Customer_EN')['Avg_Size'].mean().reindex(customers)
+
+bars4 = plt.bar(customers, avg_sizes, color=colors, width=0.5)
+plt.title('Average Package Size by Customer (L + W + H)', fontsize=14, fontweight='bold', pad=15)
+plt.xlabel('Customer', fontsize=11)
+plt.ylabel('Average Size Sum (cm)', fontsize=11)
+plt.grid(axis='y', linestyle='--', alpha=0.5)
+
+for bar in bars4:
     yval = bar.get_height()
-    plt.text(bar.get_x() + bar.get_width()/2.0, yval + (yval*0.01 + 0.5), f"{yval:,.0f}", ha='center', va='bottom', fontsize=9, color='#404040')
+    plt.text(bar.get_x() + bar.get_width()/2, yval + 1, f'{yval:.1f} cm', ha='center', va='bottom', fontsize=10)
 
-for spine in ax1.spines.values():
-    spine.set_color('#D9D9D9')
-
-plt.grid(axis='y', linestyle='--', alpha=0.3, color='#CCCCCC')
-plt.legend(frameon=True, facecolor='white', edgecolor='#E0E0E0', fontsize=10)
-plt.tight_layout()
-plt.show()
-
-# 圖 2：前 10 項改善 SKU 水平長條圖
-top10_df = df_benefit_sorted.head(10).iloc[::-1]
-
-plt.figure(figsize=(9, 5.5), facecolor='white', dpi=150)
-ax2 = plt.subplot(111)
-ax2.set_facecolor('white')
-
-bars_h = plt.barh(top10_df["SKU編號"].astype(str), top10_df["節省距離成本"], color='#70AD47', alpha=0.85, height=0.6)
-
-plt.title("Top 10 SKUs by Distance Cost Reduction", fontsize=13, fontweight='bold', pad=15, color='#262626')
-plt.xlabel("Distance Cost Reduction", fontsize=11, color='#404040')
-plt.ylabel("SKU Number", fontsize=11, color='#404040')
-
-for bar in bars_h:
-    xval = bar.get_width()
-    plt.text(xval + (max(top10_df["節省距離成本"])*0.01 + 0.2), bar.get_y() + bar.get_height()/2.0, f"{xval:,.1f}", ha='left', va='center', fontsize=9, color='#404040')
-
-for spine in ax2.spines.values():
-    spine.set_color('#D9D9D9')
-
-plt.grid(axis='x', linestyle='--', alpha=0.3, color='#CCCCCC')
 plt.tight_layout()
 plt.show()
 
 # ------------------------------------------------------------------------------
-# 12. 中文分析結論 HTML 區塊
+# 第六區：匯出 Excel 與自動下載 (customer_monthly_features.xlsx)
 # ------------------------------------------------------------------------------
-print("【步驟 11/12】生成分析結論與管理建議...")
+print("\n" + "="*50)
+print("=== STEP 5: 匯出多 Sheet Excel 檔案 ===")
+print("="*50)
 
-# 數據分析
-cluster_counts_str = "、".join([f"群組 {i}：{len(df[df['群組編號']==i])} 項" for i in range(1, 6)])
+output_filename = 'customer_monthly_features.xlsx'
 
-max_out_cluster = df_summary.loc[df_summary["平均每日出貨箱數"].idxmax(), "群組編號"]
-max_pick_cluster = df_summary.loc[df_summary["平均每日揀貨次數"].idxmax(), "群組編號"]
-max_dist_cluster = df_summary.loc[df_summary["平均目前距離m"].idxmax(), "群組編號"]
+# 1. Customer_Profile 工作表
+df_profile = df_plot.groupby(['客戶代碼', '客戶名稱', 'Customer_EN']).agg(
+    Total_Shipment_6M=('Monthly_Volume', 'sum'),
+    Avg_Monthly_Volume=('Monthly_Volume', 'mean'),
+    Avg_Weight=('Avg_Weight', 'mean'),
+    Avg_Size=('Avg_Size', 'mean'),
+    Avg_Remote_Ratio=('Remote_Ratio', 'mean'),
+    Avg_Cold_Ratio=('Cold_Ratio', 'mean'),
+    Avg_COD_Ratio=('COD_Ratio', 'mean'),
+    Avg_TimeSlot_Ratio=('TimeSlot_Ratio', 'mean'),
+    Avg_Redelivery_Ratio=('Redelivery_Ratio', 'mean'),
+    Avg_Failure_Ratio=('Failure_Ratio', 'mean')
+).reset_index().round(4)
 
-# 建議優先調整群組 (綜合揀貨次數與可改善潛力)
-group_savings = df.groupby("群組編號")["節省距離成本"].sum()
-priority_cluster = group_savings.idxmax()
+# 2. Monthly_Volume 工作表 (Pivot Table)
+df_monthly_pivot = df_plot.pivot_table(
+    index=['客戶代碼', '客戶名稱'], 
+    columns='Month', 
+    values='Monthly_Volume', 
+    aggfunc='sum'
+).reset_index()
 
-top3_skus = df_benefit_sorted.head(3)["SKU編號"].tolist()
-top3_skus_str = "、".join([str(s) for s in top3_skus])
+# 寫入 Excel
+with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+    df_cm.to_excel(writer, sheet_name='Customer-Month', index=False)
+    df_kmeans.to_excel(writer, sheet_name='KMeans_Features', index=False)
+    df_profile.to_excel(writer, sheet_name='Customer_Profile', index=False)
+    df_monthly_pivot.to_excel(writer, sheet_name='Monthly_Volume', index=False)
 
-monthly_savings = saved_cost * 22
-yearly_savings = saved_cost * 264
+print(f"Excel 檔案 [{output_filename}] 已成功建立！")
+print("包含工作表：")
+print("  1. Customer-Month")
+print("  2. KMeans_Features (準備供下一步驟 K-Means 使用)")
+print("  3. Customer_Profile")
+print("  4. Monthly_Volume")
 
-conclusion_html = f"""
-<div style="background-color: #F2F7FA; border: 1px solid #B8D1E5; border-radius: 8px; padding: 22px; font-family: Microsoft JhengHei, sans-serif; margin: 25px 0;">
-    <h2 style="color: #1F4E78; margin-top: 0; font-size: 18px; border-bottom: 2px solid #1F4E78; padding-bottom: 8px;">五、SKU 分群與儲位優化分析結論</h2>
-    
-    <div style="margin-top: 15px; color: #262626; font-size: 14px; line-height: 1.7;">
-        <p><strong>【資料摘要與分群結果】</strong><br>
-        本評估共分析 <strong>{total_sku_cnt}</strong> 項 SKU。經由 K-Means 演算法分成 5 個群組，各群數量分別為：{cluster_counts_str}。</p>
-        
-        <p><strong>【關鍵數據發現】</strong></p>
-        <ul style="margin-top: 5px; margin-bottom: 10px; padding-left: 20px;">
-            <li><strong>最高出貨量群組：</strong>群組 {max_out_cluster}（平均每日 {df_summary.loc[max_out_cluster-1, '平均每日出貨箱數']:.1f} 箱）</li>
-            <li><strong>最高揀貨頻率群組：</strong>群組 {max_pick_cluster}（平均每日 {df_summary.loc[max_pick_cluster-1, '平均每日揀貨次數']:.1f} 次）</li>
-            <li><strong>目前距離最遠群組：</strong>群組 {max_dist_cluster}（平均目前距離 {df_summary.loc[max_dist_cluster-1, '平均目前距離m']:.1f} 米）</li>
-        </ul>
-
-        <p><strong>【效益改善評估】</strong></p>
-        <ul style="margin-top: 5px; margin-bottom: 10px; padding-left: 20px;">
-            <li><strong>建議優先調整：</strong>建議優先調整 <strong>群組 {priority_cluster}</strong>，整體共需調整 <strong>{adj_sku_cnt}</strong> 項 SKU 的儲位配置。</li>
-            <li><strong>節省成本前 3 名 SKU：</strong>{top3_skus_str}。</li>
-            <li><strong>每日距離成本：</strong>由改善前 <strong>{before_cost:,.1f}</strong> 降至改善後 <strong>{after_cost:,.1f}</strong>，每日可降低 <strong>{saved_cost:,.1f}</strong> 搬運距離成本。</li>
-            <li><strong>整體改善率：</strong>達 <strong>{overall_imp_rate:.1f}%</strong>。</li>
-            <li><strong>中長期預估效益：</strong>以每月 22 工作日估算，每月可減少 <strong>{monthly_savings:,.1f}</strong> 米搬運距離；以每年 264 工作日估算，每年可節省高達 <strong>{yearly_savings:,.1f}</strong> 米搬運距離。</li>
-        </ul>
-
-        <p><strong>【管理建議與策略推動】</strong><br>
-        建議倉儲管理團隊採取分階段搬遷策略，優先將前 10 項高效益 SKU（如 {top3_skus_str} 等）移動至靠近主要作業區的周轉區，可迅速發揮 80% 以上的降本效益，大幅提升揀貨作業效率與人因工程友善度。</p>
-    </div>
-</div>
-"""
-display(HTML(conclusion_html))
-
-# ------------------------------------------------------------------------------
-# 13. 匯出 Excel (openpyxl 美化與多工作表)
-# ------------------------------------------------------------------------------
-print("【步驟 12/12】產生並格式化 Excel 報表 (KMeans_SKU_分析結果.xlsx)...")
-
-output_filename = "KMeans_SKU_分析結果.xlsx"
-
-# 建立簡化版摘要表供 Excel
-df_overall_summary = pd.DataFrame([{
-    "項目": "分析 SKU 總數", "數值": total_sku_cnt
-}, {
-    "項目": "建議調整 SKU 數", "數值": adj_sku_cnt
-}, {
-    "項目": "改善前每日距離成本", "數值": before_cost
-}, {
-    "項目": "改善後每日距離成本", "數值": after_cost
-}, {
-    "項目": "每日節省距離成本", "數值": saved_cost
-}, {
-    "項目": "整體改善率", "數值": overall_imp_rate / 100.0
-}, {
-    "項目": "每月預估節省距離(22天)", "數值": monthly_savings
-}, {
-    "項目": "每年預估節省距離(264天)", "數值": yearly_savings
-}])
-
-df_management = pd.DataFrame([
-    {"階段": "第一階段 (高優先)", "目標SKU": top3_skus_str, "管理策略": "即刻進行儲位對調，配置於距作業區 20% 內之黃金通道，迅速降低揀貨行進距離。"},
-    {"階段": "第二階段 (群組優化)", "目標SKU": f"群組 {priority_cluster} 全體 SKU", "管理策略": "依據熱銷及高揀貨頻率特性，重新規劃整區動線，減少二次搬運。"},
-    {"階段": "第三階段 (特殊品項)", "目標SKU": "液體 / 易碎 / 重物 SKU", "管理策略": "建置專屬安全防護區與棧板儲位，兼顧作業安全與物流效率。"},
-    {"階段": "第四階段 (動態檢討)", "目標SKU": "季節性商品及低頻商品", "管理策略": "導入淡旺季動態儲位機制，低頻商品後移，維持前端儲位彈性。"}
-])
-
-wb = openpyxl.Workbook()
-wb.remove(wb.active) # 移除預設工作表
-
-# 定義配色與樣式
-navy_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-white_bold_font = Font(name="Microsoft JhengHei", size=11, bold=True, color="FFFFFF")
-regular_font = Font(name="Microsoft JhengHei", size=10)
-bold_font = Font(name="Microsoft JhengHei", size=10, bold=True)
-
-thin_border = Border(
-    left=Side(style='thin', color='D9D9D9'),
-    right=Side(style='thin', color='D9D9D9'),
-    top=Side(style='thin', color='D9D9D9'),
-    bottom=Side(style='thin', color='D9D9D9')
-)
-
-excel_cluster_fills = {
-    1: PatternFill(start_color="DCEAF7", end_color="DCEAF7", fill_type="solid"),
-    2: PatternFill(start_color="E2F0D9", end_color="E2F0D9", fill_type="solid"),
-    3: PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid"),
-    4: PatternFill(start_color="E4DFEC", end_color="E4DFEC", fill_type="solid"),
-    5: PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-}
-
-yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-
-sheets_data = [
-    ("SKU分群結果", df_sku_result),
-    ("五群統計摘要", df_summary),
-    ("SKU效益分析", df_benefit_sorted),
-    ("整體效益摘要", df_overall_summary),
-    ("管理建議", df_management)
-]
-
-for sheet_name, data_df in sheets_data:
-    ws = wb.create_sheet(title=sheet_name)
-    ws.views.sheetView[0].showGridLines = True
-    
-    # 寫入標題
-    headers = list(data_df.columns)
-    ws.append(headers)
-    
-    for col_idx, h in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.fill = navy_fill
-        cell.font = white_bold_font
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    ws.row_dimensions[1].height = 28
-    
-    # 寫入資料
-    for r_idx, row in data_df.iterrows():
-        ws.append(list(row))
-        current_row = r_idx + 2
-        ws.row_dimensions[current_row].height = 20
-        
-        for c_idx, val in enumerate(row, 1):
-            cell = ws.cell(row=current_row, column=c_idx)
-            cell.font = regular_font
-            cell.border = thin_border
-            cell.alignment = Alignment(vertical='center')
-            col_name = headers[c_idx - 1]
-            
-            # 格式化數字
-            if isinstance(val, (int, float, np.number)):
-                if "率" in col_name or "比例" in col_name or "占比" in col_name:
-                    cell.number_format = '0.0%' if sheet_name == "整體效益摘要" and col_name == "數值" else '0.0%'
-                    if sheet_name != "整體效益摘要":
-                        cell.value = val / 100.0 if val > 1 else val
-                elif "數" in col_name or "次" in col_name or "成本" in col_name or "距離" in col_name or "PCA" in col_name or "等級" in col_name:
-                    if isinstance(val, int) or (isinstance(val, float) and val.is_integer() and "PCA" not in col_name and "平均" not in col_name):
-                        cell.number_format = '#,##0'
-                    else:
-                        cell.number_format = '#,##0.00'
-                cell.alignment = Alignment(horizontal='right', vertical='center')
-            else:
-                if col_name in ["SKU編號", "商品名稱", "商品類別", "目前儲位區", "群組特性", "管理建議", "項目", "階段", "目標SKU"]:
-                    cell.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-                else:
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    
-            # 套用群組顏色
-            if col_name == "群組編號" and isinstance(val, (int, float)) and val in excel_cluster_fills:
-                cell.fill = excel_cluster_fills[int(val)]
-                cell.font = bold_font
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-
-    # 特定表特殊高亮處理
-    if sheet_name == "SKU效益分析":
-        # 前 10 高亮
-        for r in range(2, min(12, len(data_df) + 2)):
-            for c in range(1, len(headers) + 1):
-                cell = ws.cell(row=r, column=c)
-                if headers[c-1] != "群組編號":
-                    cell.fill = yellow_fill
-
-        # 條件格式：節省距離成本 綠色漸層
-        cost_col_idx = headers.index("節省距離成本") + 1
-        col_letter = get_column_letter(cost_col_idx)
-        color_scale = ColorScaleRule(
-            start_type='min', start_color='FFFFFF',
-            end_type='max', end_color='E2F0D9'
-        )
-        ws.conditional_formatting.add(f"{col_letter}2:{col_letter}{len(data_df)+1}", color_scale)
-
-    # 凍結第一列與自動篩選
-    ws.freeze_panes = 'A2'
-    ws.auto_filter.ref = ws.dimensions
-    
-    # 自動調整欄寬
-    for col in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            val_str = str(cell.value or '')
-            # 處理中文長度計算
-            cell_len = sum(2 if ord(char) > 127 else 1 for char in val_str)
-            if cell_len > max_len:
-                max_len = cell_len
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
-
-# 儲存 Excel
-wb.save(output_filename)
-
-# 觸發下載
+# 自動啟動瀏覽器下載
+print("\n正在下載產生的 Excel 檔案至您的電腦...")
 files.download(output_filename)
-
-print("✅ 所有分析程序已成功完成！分析結果 Excel 檔案已自動下載。")
+print("=== 特徵工程流程順利完成！ ===")
